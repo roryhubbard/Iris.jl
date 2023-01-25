@@ -30,9 +30,7 @@ function closest_point_to_ellipsoid_ballspace(obstacle, C, d)
     @constraint(model, obstacle_ball_space * w .== x)
     @constraint(model, sum(w) == 1)
 
-    @objective(model, Min, x' * x)
-
-    println(model)
+    @objective(model, Min, x'x)
 
     optimize!(model)
 
@@ -66,7 +64,6 @@ function separating_hyperplanes(C, d, obstacles)
     b = Vector{Float64}(undef, num_obstacles)
     closest_points = Matrix{Float64}(undef, num_obstacles, 3)
 
-    i = 1
     for i in 1:num_obstacles
         if !is_significant_obstacle[i]
             continue
@@ -77,23 +74,19 @@ function separating_hyperplanes(C, d, obstacles)
 
         # on the last iteration for i, this loop will be skipped
         for j in i+1:num_obstacles
-            # TODO: check this
-            if all(v -> all(aᵢ' * v' .≥ bᵢ), obstacles[j])
-                is_significant_obstacle[j] = false
-            end
+            is_significant_obstacle[j] = !all(aᵢ' * obstacles[j]' .≥ bᵢ)
         end
 
         A[i, :] = aᵢ
         b[i] = bᵢ
         closest_points[i, :] = closest_point
-        i += 1
     end
 
     A[is_significant_obstacle, :], b[is_significant_obstacle],
         closest_points[is_significant_obstacle, :]
 end
 
-function inscribed_ellipsoid(A, b)
+function inscribed_ellipsoid(A, b, Cstart=I(size(A, 2)))
     dims = size(A, 2)
 
     model = Model(SCS.Optimizer)
@@ -103,7 +96,7 @@ function inscribed_ellipsoid(A, b)
         model,
         C[i = 1:dims, j = 1:dims],
         PSD,
-        start = (i == j ? 1.0 : 0.0),
+        start = Cstart[i, j],
     )
 
     @variable(model, d[1:dims])
@@ -116,8 +109,6 @@ function inscribed_ellipsoid(A, b)
     @variable(model, logdetC)
     @constraint(model, [logdetC; 1; vec(C)] in MOI.LogDetConeSquare(dims))
     @objective(model, Max, logdetC)
-
-    println(model)
 
     optimize!(model)
 
@@ -136,15 +127,16 @@ function iris(obstacles)
     A = Matrix{Float64}
     b = Vector{Float64}
 
-    while true
+    max_iterations = 10
+    for i in 1:max_iterations
         A, b, closest_points = separating_hyperplanes(C, d, obstacles)
         draw_planes(vis, A, b, closest_points)
-        C_updated, d = inscribed_ellipsoid(A, b)
+        C_updated, d = inscribed_ellipsoid(A, b, C)
         draw_ellipsoid(vis["ellipsoid"], C_updated, d)
-        break
 
         detC = det(C)
         if (det(C_updated) - detC) / detC < tolerance
+            println("Finished after ", i, " iterations.")
             break
         end
 
@@ -157,16 +149,17 @@ function iris(obstacles)
 end
 
 function test_iris()
+    w = 1
     obstacle = [
         0 0 0;
-        1 0 0;
-        1 1 0;
-        0 1 0;
-        0 0 1;
-        1 0 1;
-        1 1 1;
-        0 1 1;
-    ]
+        w 0 0;
+        w w 0;
+        0 w 0;
+        0 0 w;
+        w 0 w;
+        w w w;
+        0 w w;
+    ] .- [w/2 w/2 w/2]
     obstacles = [
         obstacle .+ [2 0 0],
         obstacle .+ [0 2 0],
@@ -195,7 +188,7 @@ function iris_demo()
     end
     feasible_set = Polyhedra.Mesh(polyhedron(poly))
 
-    C, d = inscribed_ellipsoid(A, b)
+    C, d = inscribed_ellipsoid(A, b, C)
 
     ellipsoid = HyperSphere(zero(Point{3, Float64}), 1.0)
     tf = AffineMap(C, d)
