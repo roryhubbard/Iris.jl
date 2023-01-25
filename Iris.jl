@@ -42,16 +42,16 @@ function closest_point_to_ellipsoid(obstacle, C, d)
     C * x + d
 end
 
+function closest_obstacles_first!(C, d, obstacles)
+    sort!(obstacles, by = obstacle -> norm(
+          closest_point_to_ellipsoid_ballspace(obstacle, C, d)))
+end
+
 function tangent_plane_to_ellipsoid(x, C, d)
     invC = inv(C)
     a = normalize(invC * invC' * (x - d))
     b = a' * x
     a, b
-end
-
-function closest_obstacles_first!(C, d, obstacles)
-    sort!(obstacles, by = obstacle -> norm(
-          closest_point_to_ellipsoid_ballspace(obstacle, C, d)))
 end
 
 function separating_hyperplanes(C, d, obstacles)
@@ -130,9 +130,11 @@ function iris(obstacles)
     max_iterations = 10
     for i in 1:max_iterations
         A, b, closest_points = separating_hyperplanes(C, d, obstacles)
-        draw_planes(vis, A, b, closest_points)
         C_updated, d = inscribed_ellipsoid(A, b, C)
+
         draw_ellipsoid(vis["ellipsoid"], C_updated, d)
+        draw_planes(vis, A, b, closest_points)
+        draw_polyhedron(vis["polyhedron"], A, b)
 
         detC = det(C)
         if (det(C_updated) - detC) / detC < tolerance
@@ -160,6 +162,7 @@ function test_iris()
         w w w;
         0 w w;
     ] .- [w/2 w/2 w/2]
+
     obstacles = [
         obstacle .+ [2 0 0],
         obstacle .+ [0 2 0],
@@ -172,64 +175,6 @@ function test_iris()
     A, b, C, d = iris(obstacles)
 end
 
-function iris_demo()
-    A = [ 0 -1  0;
-          1  0  0;
-          0  1  0;
-         -1  0  0;
-          0  0 -1;
-          0  0  1]
-
-    b = [0 1 1 0 0 2]'
-
-    poly = HalfSpace(A[1, :], b[1])
-    for i = 2:size(A, 1)
-        poly = poly ∩ HalfSpace(A[i, :], b[i])
-    end
-    feasible_set = Polyhedra.Mesh(polyhedron(poly))
-
-    C, d = inscribed_ellipsoid(A, b, C)
-
-    ellipsoid = HyperSphere(zero(Point{3, Float64}), 1.0)
-    tf = AffineMap(C, d)
-
-    vis = Visualizer()
-
-    setobject!(vis["polyhedron"], feasible_set,
-               MeshPhongMaterial(color=RGBA(1, 1, 1, 0.5)))
-
-    setobject!(vis["ellipsoid"], ellipsoid,
-               MeshPhongMaterial(color=RGBA(0, 0, 1, 0.5)))
-    settransform!(vis["ellipsoid"], tf)
-
-    obstacle = [
-        2 2 2;
-        3 2 2;
-        3 3 2;
-        2 3 2;
-        2 2 3;
-        3 2 3;
-        3 3 3;
-        2 3 3;
-    ]
-
-    closest_point = closest_point_to_ellipsoid(obstacle, C, d)
-
-    obstacle_viz = Polyhedra.Mesh(polyhedron(vrep(obstacle)))
-    setobject!(vis["obstacle"], obstacle_viz,
-               MeshPhongMaterial(color=RGBA(1, 1, 1, 0.5)))
-
-    x_ellipse_space_viz = HyperSphere(Point{3, Float64}(closest_point), .05)
-    setobject!(vis["closest_point"], x_ellipse_space_viz,
-               MeshPhongMaterial(color=RGBA(1, 0, 0, 0.5)))
-
-    a, b = tangent_plane_to_ellipsoid(closest_point, C, d)
-
-    draw_plane(vis["plane"], a, b, closest_point)
-    
-    open(vis)
-end
-
 function draw_obstacles(vis, obstacles)
     for (i, obstacle) in enumerate(obstacles)
         draw_obstacle(vis["obstacle"][string(i)], obstacle)
@@ -239,6 +184,12 @@ end
 function draw_obstacle(vis, obstacle)
     setobject!(vis, Polyhedra.Mesh(polyhedron(vrep(obstacle))),
                MeshPhongMaterial(color=RGBA(1, 1, 1, 0.5)))
+end
+
+function draw_ellipsoid(vis, C, d)
+    setobject!(vis, HyperSphere(zero(Point{3, Float64}), 1.0),
+               MeshPhongMaterial(color=RGBA(0, 0, 1, 0.5)))
+    settransform!(vis, AffineMap(C, d))
 end
 
 function draw_planes(vis, A, b, closest_points)
@@ -267,10 +218,14 @@ function draw_plane(vis_plane, vis_point, a, b, closest_point)
                MeshPhongMaterial(color=RGBA(1, 0, 0, 0.5)))
 end
 
-function draw_ellipsoid(vis, C, d)
-    setobject!(vis, HyperSphere(zero(Point{3, Float64}), 1.0),
-               MeshPhongMaterial(color=RGBA(0, 0, 1, 0.5)))
-    settransform!(vis, AffineMap(C, d))
+function draw_polyhedron(vis, A, b)
+    poly = HalfSpace(A[1, :], b[1])
+    for i = 2:size(A, 1)
+        poly = poly ∩ HalfSpace(A[i, :], b[i])
+    end
+    setobject!(vis, Polyhedra.Mesh(polyhedron(poly)),
+               MeshPhongMaterial(color=RGBA(1, 1, 1, 0.5)))
 end
+
 
 end
