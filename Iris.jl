@@ -13,14 +13,13 @@ using GeometryBasics
 using MeshCat
 using Polyhedra
 
-export display_result
+export test_iris
 
-function closest_point_to_ellipsoid(v, C, d)
-    num_vertices = size(v, 1)
-    dims = size(v, 2)
+function closest_point_to_ellipsoid_ballspace(obstacle, C, d)
+    num_vertices = size(obstacle, 1)
+    dims = size(obstacle, 2)
 
-    # v is the obstacle vertices in ellipse space
-    v_ball_space = inv(C) * (v' .- d)
+    obstacle_ball_space = inv(C) * (obstacle' .- d)
 
     model = Model(SCS.Optimizer)
 
@@ -28,7 +27,7 @@ function closest_point_to_ellipsoid(v, C, d)
     @variable(model, w[1:num_vertices])
 
     @constraint(model, w in MOI.Nonnegatives(num_vertices))
-    @constraint(model, v_ball_space * w .== x)
+    @constraint(model, obstacle_ball_space * w .== x)
     @constraint(model, sum(w) == 1)
 
     @objective(model, Min, x' * x)
@@ -37,14 +36,61 @@ function closest_point_to_ellipsoid(v, C, d)
 
     optimize!(model)
 
-    C * value.(x) + d
+    value.(x)
+end
+
+function closest_point_to_ellipsoid(obstacle, C, d)
+    x = closest_point_to_ellipsoid_ballspace(obstacle, C, d)
+    C * x + d
 end
 
 function tangent_plane_to_ellipsoid(x, C, d)
     invC = inv(C)
-    a = normalize(2 * invC * invC' * (x - d))
+    a = normalize(invC * invC' * (x - d))
     b = a' * x
     a, b
+end
+
+function closest_obstacles_first!(C, d, obstacles)
+    sort!(obstacles, by = obstacle -> norm(
+          closest_point_to_ellipsoid_ballspace(obstacle, C, d)))
+end
+
+function separating_hyperplanes(C, d, obstacles)
+    closest_obstacles_first!(C, d, obstacles)
+
+    num_obstacles = size(obstacles, 1)
+    is_significant_obstacle = trues(num_obstacles)
+
+    A = Matrix{Float64}(undef, num_obstacles, 3)
+    b = Vector{Float64}(undef, num_obstacles)
+    closest_points = Matrix{Float64}(undef, num_obstacles, 3)
+
+    i = 1
+    for i in 1:num_obstacles
+        if !is_significant_obstacle[i]
+            continue
+        end
+
+        closest_point = closest_point_to_ellipsoid(obstacles[i], C, d)
+        aᵢ, bᵢ = tangent_plane_to_ellipsoid(closest_point, C, d)
+
+        # on the last iteration for i, this loop will be skipped
+        for j in i+1:num_obstacles
+            # TODO: check this
+            if all(v -> all(aᵢ' * v' .≥ bᵢ), obstacles[j])
+                is_significant_obstacle[j] = false
+            end
+        end
+
+        A[i, :] = aᵢ
+        b[i] = bᵢ
+        closest_points[i, :] = closest_point
+        i += 1
+    end
+
+    A[is_significant_obstacle, :], b[is_significant_obstacle],
+        closest_points[is_significant_obstacle, :]
 end
 
 function inscribed_ellipsoid(A, b)
@@ -78,7 +124,62 @@ function inscribed_ellipsoid(A, b)
     value.(C), value.(d)
 end
 
-function display_result()
+function iris(obstacles)
+    vis = Visualizer()
+    draw_obstacles(vis, obstacles)
+
+    ϵ = .1
+    C = ϵ * I(3)
+    d = [0.; 0.; 0.]
+    tolerance = 1e-3
+
+    A = Matrix{Float64}
+    b = Vector{Float64}
+
+    while true
+        A, b, closest_points = separating_hyperplanes(C, d, obstacles)
+        draw_planes(vis, A, b, closest_points)
+        C_updated, d = inscribed_ellipsoid(A, b)
+        draw_ellipsoid(vis["ellipsoid"], C_updated, d)
+        break
+
+        detC = det(C)
+        if (det(C_updated) - detC) / detC < tolerance
+            break
+        end
+
+        C = C_updated
+    end
+
+    open(vis)
+
+    A, b, C, d
+end
+
+function test_iris()
+    obstacle = [
+        0 0 0;
+        1 0 0;
+        1 1 0;
+        0 1 0;
+        0 0 1;
+        1 0 1;
+        1 1 1;
+        0 1 1;
+    ]
+    obstacles = [
+        obstacle .+ [2 0 0],
+        obstacle .+ [0 2 0],
+        obstacle .+ [0 0 2],
+        obstacle .- [2 0 0],
+        obstacle .- [0 2 0],
+        obstacle .- [0 0 2],
+    ]
+
+    A, b, C, d = iris(obstacles)
+end
+
+function iris_demo()
     A = [ 0 -1  0;
           1  0  0;
           0  1  0;
@@ -131,23 +232,52 @@ function display_result()
 
     a, b = tangent_plane_to_ellipsoid(closest_point, C, d)
 
-    draw_plane(vis, a, b, closest_point)
+    draw_plane(vis["plane"], a, b, closest_point)
     
     open(vis)
 end
 
-function draw_plane(vis, a, b, x)
+function draw_obstacles(vis, obstacles)
+    for (i, obstacle) in enumerate(obstacles)
+        draw_obstacle(vis["obstacle"][string(i)], obstacle)
+    end
+end
+
+function draw_obstacle(vis, obstacle)
+    setobject!(vis, Polyhedra.Mesh(polyhedron(vrep(obstacle))),
+               MeshPhongMaterial(color=RGBA(1, 1, 1, 0.5)))
+end
+
+function draw_planes(vis, A, b, closest_points)
+    num_planes = size(A, 1)
+    for i in 1:num_planes
+        draw_plane(vis["planes"][string(i)], vis["points"][string(i)],
+                   A[i, :], b[i], closest_points[i, :])
+    end
+end
+
+function draw_plane(vis_plane, vis_point, a, b, closest_point)
     R = hcat(a, nullspace(a'))
+    # make sure this rotation matrix is right handed
+    R[end, :] *= det(R)
 
     xw = .01
     yw = 1
     zw = 1
 
-    plane = HyperRectangle{3, Float64}([0 0 0], [xw yw zw])
-    tf = AffineMap(R, x) ∘ Translation(-xw/2, -yw/2, -zw/2)
+    setobject!(vis_plane, HyperRectangle{3, Float64}([0 0 0], [xw yw zw]),
+               MeshPhongMaterial(color=RGBA(0, 1, 0, 0.5)))
+    settransform!(vis_plane,
+        AffineMap(R, closest_point) ∘ Translation(-xw/2, -yw/2, -zw/2))
 
-    setobject!(vis["plane"], plane, MeshPhongMaterial(color=RGBA(0, 1, 0, 0.5)))
-    settransform!(vis["plane"], tf)
+    setobject!(vis_point, HyperSphere(Point{3, Float64}(closest_point), .05),
+               MeshPhongMaterial(color=RGBA(1, 0, 0, 0.5)))
+end
+
+function draw_ellipsoid(vis, C, d)
+    setobject!(vis, HyperSphere(zero(Point{3, Float64}), 1.0),
+               MeshPhongMaterial(color=RGBA(0, 0, 1, 0.5)))
+    settransform!(vis, AffineMap(C, d))
 end
 
 end
