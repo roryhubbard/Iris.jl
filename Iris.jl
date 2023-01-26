@@ -82,8 +82,7 @@ function separating_hyperplanes(C, d, obstacles)
         closest_points[i, :] = closest_point
     end
 
-    A[is_significant_obstacle, :], b[is_significant_obstacle],
-        closest_points[is_significant_obstacle, :]
+    A, b, closest_points, is_significant_obstacle
 end
 
 function inscribed_ellipsoid(A, b, Cstart=I(size(A, 2)))
@@ -117,24 +116,37 @@ end
 
 function iris(obstacles)
     vis = Visualizer()
-    draw_obstacles(vis, obstacles)
+    anim = Animation()
 
     ϵ = .1
     C = ϵ * I(3)
-    d = [0.; 0.; 0.]
-    tolerance = 1e-3
+    d = [0., 0., 0.]
+
+    set_obstacles(vis, obstacles)
+    set_planes(vis, size(obstacles, 1))
+    set_ellipsoid(vis)
+
+    atframe(anim, 0) do
+        num_obstacles = size(obstacles, 1)
+        draw_obstacles(vis, num_obstacles)
+        draw_ellipsoid(vis["ellipsoid"], C, d)
+        draw_planes(vis, num_obstacles)
+    end
 
     A = Matrix{Float64}
     b = Vector{Float64}
 
+    tolerance = 1e-3
     max_iterations = 10
     for i in 1:max_iterations
-        A, b, closest_points = separating_hyperplanes(C, d, obstacles)
+        A, b, closest_points, is_significant =
+            separating_hyperplanes(C, d, obstacles)
         C_updated, d = inscribed_ellipsoid(A, b, C)
 
-        draw_ellipsoid(vis["ellipsoid"], C_updated, d)
-        draw_planes(vis, A, b, closest_points)
-        draw_polyhedron(vis["polyhedron"], A, b)
+        atframe(anim, i * 30) do
+            draw_ellipsoid(vis["ellipsoid"], C_updated, d)
+            draw_planes(vis, A, b, closest_points, is_significant)
+        end
 
         detC = det(C)
         if (det(C_updated) - detC) / detC < tolerance
@@ -145,7 +157,10 @@ function iris(obstacles)
         C = C_updated
     end
 
+    setanimation!(vis, anim)
     open(vis)
+    # MeshCat.convert_frames_to_video(
+    #     "/home/chub/Downloads/___________.tar")
 
     A, b, C, d
 end
@@ -167,55 +182,95 @@ function test_iris()
         obstacle .+ [2 0 0],
         obstacle .+ [0 2 0],
         obstacle .+ [0 0 2],
-        obstacle .- [2 0 0],
-        obstacle .- [0 2 0],
-        obstacle .- [0 0 2],
+        obstacle .- [1 0 0],
+        obstacle .- [0 1 0],
+        obstacle .- [0 0 1],
     ]
 
     A, b, C, d = iris(obstacles)
 end
 
-function draw_obstacles(vis, obstacles)
+function set_obstacles(vis, obstacles)
     for (i, obstacle) in enumerate(obstacles)
-        draw_obstacle(vis["obstacle"][string(i)], obstacle)
+        set_obstacle(vis["obstacle"][string(i)], obstacle)
     end
 end
 
-function draw_obstacle(vis, obstacle)
+function set_obstacle(vis, obstacle)
     setobject!(vis, Polyhedra.Mesh(polyhedron(vrep(obstacle))),
                MeshPhongMaterial(color=RGBA(1, 1, 1, 0.5)))
 end
 
-function draw_ellipsoid(vis, C, d)
-    setobject!(vis, HyperSphere(zero(Point{3, Float64}), 1.0),
-               MeshPhongMaterial(color=RGBA(0, 0, 1, 0.5)))
-    settransform!(vis, AffineMap(C, d))
-end
-
-function draw_planes(vis, A, b, closest_points)
-    num_planes = size(A, 1)
-    for i in 1:num_planes
-        draw_plane(vis["planes"][string(i)], vis["points"][string(i)],
-                   A[i, :], b[i], closest_points[i, :])
+function draw_obstacles(vis, num_obstacles)
+    for i in 1:num_obstacles
+        setvisible!(vis["obstacle"][string(i)], true)
     end
 end
 
-function draw_plane(vis_plane, vis_point, a, b, closest_point)
-    R = hcat(a, nullspace(a'))
-    # make sure this rotation matrix is right handed
-    R[end, :] *= det(R)
+function set_ellipsoid(vis)
+    setobject!(vis["ellipsoid"], HyperSphere(zero(Point{3, Float64}), 1.0),
+               MeshPhongMaterial(color=RGBA(0, 0, 1, 0.5)))
+end
 
+function draw_ellipsoid(vis, C, d)
+    settransform!(vis, AffineMap(C, d))
+end
+
+function set_planes(vis, num_planes)
+    for i in 1:num_planes
+        set_plane(vis["planes"][string(i)])
+        set_closest_point(vis["points"][string(i)])
+    end
+end
+
+function set_plane(vis)
+    xw = .01
+    yw = 1.
+    zw = 1.
+    setobject!(vis, HyperRectangle{3, Float64}([0 0 0], [xw yw zw]),
+               MeshPhongMaterial(color=RGBA(0, 1, 0, 0.5)))
+end
+
+function draw_planes(vis, num_planes)
+    for i in 1:num_planes
+        setvisible!(vis["planes"][string(i)], false)
+    end
+end
+
+function draw_planes(vis, A, b, closest_points, is_significant)
+    for i in 1:size(A, 1)
+        draw_plane(vis["planes"][string(i)],
+                   A[i, :], b[i], closest_points[i, :], is_significant[i])
+        draw_closest_point(vis["points"][string(i)],
+                           closest_points[i, :], is_significant[i])
+    end
+end
+
+function draw_plane(vis, a, b, closest_point, shouldshow)
     xw = .01
     yw = 1
     zw = 1
-
-    setobject!(vis_plane, HyperRectangle{3, Float64}([0 0 0], [xw yw zw]),
-               MeshPhongMaterial(color=RGBA(0, 1, 0, 0.5)))
-    settransform!(vis_plane,
+    R = hcat(a, nullspace(a'))
+    R[:, end] *= det(R) # make sure this rotation matrix is right handed
+    setvisible!(vis, shouldshow)
+    settransform!(vis,
         AffineMap(R, closest_point) ∘ Translation(-xw/2, -yw/2, -zw/2))
+end
 
-    setobject!(vis_point, HyperSphere(Point{3, Float64}(closest_point), .05),
+function set_closest_point(vis)
+    setobject!(vis, HyperSphere(zero(Point{3, Float64}), .05),
                MeshPhongMaterial(color=RGBA(1, 0, 0, 0.5)))
+end
+
+function draw_closest_point(vis, closest_point, shouldshow)
+    setvisible!(vis, shouldshow)
+    settransform!(vis, Translation(closest_point))
+end
+
+function set_polyhedron(vis)
+    setobject!(vis, Polyhedra.Mesh(polyhedron(vrep([[0]]))),
+               MeshPhongMaterial(color=RGBA(0, 0, 0, 0.5)))
+    setvisible!(vis, false)
 end
 
 function draw_polyhedron(vis, A, b)
@@ -224,8 +279,8 @@ function draw_polyhedron(vis, A, b)
         poly = poly ∩ HalfSpace(A[i, :], b[i])
     end
     setobject!(vis, Polyhedra.Mesh(polyhedron(poly)),
-               MeshPhongMaterial(color=RGBA(1, 1, 1, 0.5)))
+               MeshPhongMaterial(color=RGBA(0, 0, 0, 0.5)))
+    setvisible!(vis, true)
 end
-
 
 end
