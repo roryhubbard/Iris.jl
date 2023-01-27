@@ -117,6 +117,7 @@ end
 function iris(obstacles)
     vis = Visualizer()
     anim = Animation()
+    framedelta = 30
 
     ϵ = .1
     C = ϵ * I(3)
@@ -129,8 +130,8 @@ function iris(obstacles)
     atframe(anim, 0) do
         num_obstacles = size(obstacles, 1)
         draw_obstacles(vis, num_obstacles)
-        draw_ellipsoid(vis["ellipsoid"], C, d)
         draw_planes(vis, num_obstacles)
+        draw_ellipsoid(vis, C, d)
     end
 
     A = Matrix{Float64}
@@ -138,23 +139,38 @@ function iris(obstacles)
 
     tolerance = 1e-3
     max_iterations = 10
-    for i in 1:max_iterations
+    i = 1
+    while i < max_iterations
         A, b, closest_points, is_significant =
             separating_hyperplanes(C, d, obstacles)
-        C_updated, d = inscribed_ellipsoid(A, b, C)
 
-        atframe(anim, i * 30) do
-            draw_ellipsoid(vis["ellipsoid"], C_updated, d)
+        atframe(anim, i * framedelta) do
             draw_planes(vis, A, b, closest_points, is_significant)
+            draw_ellipsoid(vis, C, d)
+        end
+
+        Cnext, d = inscribed_ellipsoid(A, b, C)
+
+        atframe(anim, (i+1) * framedelta) do
+            draw_ellipsoid(vis, Cnext, d)
         end
 
         detC = det(C)
-        if (det(C_updated) - detC) / detC < tolerance
+        if (det(Cnext) - detC) / detC < tolerance
             println("Finished after ", i, " iterations.")
             break
         end
 
-        C = C_updated
+        C = Cnext
+        i += 1
+    end
+
+    set_polyhedron(vis, A, b)
+    atframe(anim, 0) do
+        setvisible!(vis["polyhedron"], false)
+    end
+    atframe(anim, (i+2) * framedelta) do
+        setvisible!(vis["polyhedron"], true)
     end
 
     setanimation!(vis, anim)
@@ -213,7 +229,7 @@ function set_ellipsoid(vis)
 end
 
 function draw_ellipsoid(vis, C, d)
-    settransform!(vis, AffineMap(C, d))
+    settransform!(vis["ellipsoid"], AffineMap(C, d))
 end
 
 function set_planes(vis, num_planes)
@@ -234,6 +250,7 @@ end
 function draw_planes(vis, num_planes)
     for i in 1:num_planes
         setvisible!(vis["planes"][string(i)], false)
+        setvisible!(vis["points"][string(i)], false)
     end
 end
 
@@ -267,20 +284,13 @@ function draw_closest_point(vis, closest_point, shouldshow)
     settransform!(vis, Translation(closest_point))
 end
 
-function set_polyhedron(vis)
-    setobject!(vis, Polyhedra.Mesh(polyhedron(vrep([[0]]))),
-               MeshPhongMaterial(color=RGBA(0, 0, 0, 0.5)))
-    setvisible!(vis, false)
-end
-
-function draw_polyhedron(vis, A, b)
+function set_polyhedron(vis, A, b)
     poly = HalfSpace(A[1, :], b[1])
     for i = 2:size(A, 1)
         poly = poly ∩ HalfSpace(A[i, :], b[i])
     end
-    setobject!(vis, Polyhedra.Mesh(polyhedron(poly)),
+    setobject!(vis["polyhedron"], Polyhedra.Mesh(polyhedron(poly)),
                MeshPhongMaterial(color=RGBA(0, 0, 0, 0.5)))
-    setvisible!(vis, true)
 end
 
 end
