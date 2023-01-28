@@ -13,7 +13,7 @@ using GeometryBasics
 using MeshCat
 using Polyhedra
 
-export test_iris
+export animate_iris, test_iris
 
 function closest_point_to_ellipsoid_ballspace(obstacle, C, d)
     num_vertices = size(obstacle, 1)
@@ -22,6 +22,7 @@ function closest_point_to_ellipsoid_ballspace(obstacle, C, d)
     obstacle_ball_space = inv(C) * (obstacle' .- d)
 
     model = Model(SCS.Optimizer)
+    set_silent(model)
 
     @variable(model, x[1:dims])
     @variable(model, w[1:num_vertices])
@@ -49,14 +50,12 @@ end
 
 function tangent_plane_to_ellipsoid(x, C, d)
     invC = inv(C)
-    a = normalize(invC * invC' * (x - d))
+    a = normalize(2 * invC * invC' * (x - d))
     b = a' * x
     a, b
 end
 
 function separating_hyperplanes(C, d, obstacles)
-    closest_obstacles_first!(C, d, obstacles)
-
     num_obstacles = size(obstacles, 1)
     is_significant_obstacle = trues(num_obstacles)
 
@@ -89,6 +88,7 @@ function inscribed_ellipsoid(A, b, Cstart=I(size(A, 2)))
     dims = size(A, 2)
 
     model = Model(SCS.Optimizer)
+    set_silent(model)
 
     # Start with C as the identity matrix to avoid numerical issues.
     @variable(
@@ -114,14 +114,67 @@ function inscribed_ellipsoid(A, b, Cstart=I(size(A, 2)))
     value.(C), value.(d)
 end
 
-function iris(obstacles)
+function iris_iteration(obstacles, A, b, C, d)
+    A, b, closest_points, is_significant = separating_hyperplanes(C, d, obstacles)
+    C, d = inscribed_ellipsoid(A, b, C)
+    A, b, closest_points, is_significant, C, d
+end
+
+function iris(obstacles, starting_point)
+    ϵ = .1
+    C = ϵ * I(3)
+    d = starting_point
+
+    # Not sure if this is worth it. The ellipsoid might transform so much after
+    # some iterations that the ordering is highly inaccurate. Moving this sort
+    # into `separating_hyperplanes` would make the ordering always accurate but
+    # then we are solving the closest points on all obstacles which kind of
+    # defeats the purpose of sorting to begin with.
+    closest_obstacles_first!(C, d, obstacles)
+
+    A = Matrix{Float64}
+    b = Vector{Float64}
+    is_significant = Vector{Bool}
+
+    tolerance = 1e-3
+    max_iterations = 10
+    i = 1
+    while i < max_iterations
+        A, b, closest_points, is_significant, Cnext, dnext =
+            iris_iteration(obstacles, A, b, C, d)
+
+        detC = det(C)
+        detCnext = det(Cnext)
+        C = Cnext
+        d = dnext
+
+        if (det(Cnext) - detC) / detC < tolerance
+            println("Finished after ", i, " iterations.")
+            break
+        end
+
+        i += 1
+    end
+
+    # The rows of A and b are undefined where is_signficant is false.
+    A[is_significant, :], b[is_significant], C, d
+end
+
+function iris_with_animation(obstacles, starting_point)
     vis = Visualizer()
     anim = Animation()
     framedelta = 30
 
     ϵ = .1
     C = ϵ * I(3)
-    d = [0., 0., 0.]
+    d = starting_point
+
+    # Not sure if this is worth it. The ellipsoid might transform so much after
+    # some iterations that the ordering is highly inaccurate. Moving this sort
+    # into `separating_hyperplanes` would make the ordering always accurate but
+    # then we are solving the closest points on all obstacles which kind of
+    # defeats the purpose of sorting to begin with.
+    closest_obstacles_first!(C, d, obstacles)
 
     set_obstacles(vis, obstacles)
     set_planes(vis, size(obstacles, 1))
@@ -136,32 +189,34 @@ function iris(obstacles)
 
     A = Matrix{Float64}
     b = Vector{Float64}
+    is_significant = Vector{Bool}
 
     tolerance = 1e-3
     max_iterations = 10
     i = 1
     while i < max_iterations
-        A, b, closest_points, is_significant =
-            separating_hyperplanes(C, d, obstacles)
+        A, b, closest_points, is_significant, Cnext, dnext =
+            iris_iteration(obstacles, A, b, C, d)
 
         atframe(anim, i * framedelta) do
             draw_planes(vis, A, b, closest_points, is_significant)
             draw_ellipsoid(vis, C, d)
         end
 
-        Cnext, d = inscribed_ellipsoid(A, b, C)
-
         atframe(anim, (i+1) * framedelta) do
-            draw_ellipsoid(vis, Cnext, d)
+            draw_ellipsoid(vis, Cnext, dnext)
         end
 
         detC = det(C)
+        detCnext = det(Cnext)
+        C = Cnext
+        d = dnext
+
         if (det(Cnext) - detC) / detC < tolerance
             println("Finished after ", i, " iterations.")
             break
         end
 
-        C = Cnext
         i += 1
     end
 
@@ -178,7 +233,40 @@ function iris(obstacles)
     # MeshCat.convert_frames_to_video(
     #     "/home/chub/Downloads/___________.tar")
 
-    A, b, C, d
+    # The rows of A and b are undefined where is_signficant is false.
+    A[is_significant, :], b[is_significant], C, d
+end
+
+function animate_iris()
+    # TODO
+    s = 20
+    bounding_box_A = [
+    ]
+    bounding_box_b = []
+
+    w = 1
+    obstacle = [
+        0 0 0;
+        w 0 0;
+        w w 0;
+        0 w 0;
+        0 0 w;
+        w 0 w;
+        w w w;
+        0 w w;
+    ] .- [w/2 w/2 w/2]
+
+    obstacles = [
+        obstacle .+ [2 0 0],
+        obstacle .+ [0 2 0],
+        obstacle .+ [0 0 2],
+        obstacle .- [1 0 0],
+        obstacle .- [0 1 0],
+        obstacle .- [0 0 1],
+    ]
+    starting_point = [0., 0., 0.] # q0 in paper
+
+    A, b, C, d = iris_with_animation(obstacles, starting_point)
 end
 
 function test_iris()
@@ -202,8 +290,14 @@ function test_iris()
         obstacle .- [0 1 0],
         obstacle .- [0 0 1],
     ]
+    starting_point = [0., 0., 0.] # q0 in paper
 
-    A, b, C, d = iris(obstacles)
+    A, b, C, d = iris(obstacles, starting_point)
+
+    println("A: ", A)
+    println("b: ", b)
+    println("C: ", C)
+    println("d: ", d)
 end
 
 function set_obstacles(vis, obstacles)
