@@ -55,16 +55,16 @@ function tangent_plane_to_ellipsoid(x, C, d)
     a, b
 end
 
-function separating_hyperplanes(C, d, obstacles)
+function separating_hyperplanes(obstacles, C, d)
     num_obstacles = size(obstacles, 1)
-    is_significant_obstacle = trues(num_obstacles)
+    issignificant = trues(num_obstacles)
 
     A = Matrix{Float64}(undef, num_obstacles, 3)
     b = Vector{Float64}(undef, num_obstacles)
     closest_points = Matrix{Float64}(undef, num_obstacles, 3)
 
     for i in 1:num_obstacles
-        if !is_significant_obstacle[i]
+        if !issignificant[i]
             continue
         end
 
@@ -73,7 +73,7 @@ function separating_hyperplanes(C, d, obstacles)
 
         # on the last iteration for i, this loop will be skipped
         for j in i+1:num_obstacles
-            is_significant_obstacle[j] = !all(aᵢ' * obstacles[j]' .≥ bᵢ)
+            issignificant[j] = !all(aᵢ' * obstacles[j]' .≥ bᵢ)
         end
 
         A[i, :] = aᵢ
@@ -81,10 +81,10 @@ function separating_hyperplanes(C, d, obstacles)
         closest_points[i, :] = closest_point
     end
 
-    A, b, closest_points, is_significant_obstacle
+    A, b, closest_points, issignificant
 end
 
-function inscribed_ellipsoid(A, b, Cstart=I(size(A, 2)))
+function inscribed_ellipsoid(bounding_polytope, A, b, Cstart=I(size(A, 2)))
     dims = size(A, 2)
 
     model = Model(SCS.Optimizer)
@@ -100,6 +100,11 @@ function inscribed_ellipsoid(A, b, Cstart=I(size(A, 2)))
 
     @variable(model, d[1:dims])
 
+    for halfspace in halfspaces(bounding_polytope)
+        @constraint(model, [halfspace.β - halfspace.a' * d; C * halfspace.a]
+                    in SecondOrderCone())
+    end
+
     # ||C * aᵀᵢ||₂ + aᵀᵢ* d ≤ bᵢ ∀ i = [1,...,N]
     @constraint(model, [i = 1:size(A, 1)],
         [b[i] - A[i, :]' * d; C * A[i, :]] in SecondOrderCone())
@@ -114,13 +119,15 @@ function inscribed_ellipsoid(A, b, Cstart=I(size(A, 2)))
     value.(C), value.(d)
 end
 
-function iris_iteration(obstacles, A, b, C, d)
-    A, b, closest_points, is_significant = separating_hyperplanes(C, d, obstacles)
-    C, d = inscribed_ellipsoid(A, b, C)
-    A, b, closest_points, is_significant, C, d
+function iris_iteration(bounding_polytope, obstacles, A, b, C, d)
+    A, b, closest_points, issignificant =
+        separating_hyperplanes(obstacles, C, d)
+    C, d = inscribed_ellipsoid(bounding_polytope, A[issignificant, :],
+                               b[issignificant], C)
+    A, b, closest_points, issignificant, C, d
 end
 
-function iris(obstacles, starting_point)
+function iris(bounding_polytope, obstacles, starting_point)
     ϵ = .1
     C = ϵ * I(3)
     d = starting_point
@@ -134,14 +141,14 @@ function iris(obstacles, starting_point)
 
     A = Matrix{Float64}
     b = Vector{Float64}
-    is_significant = Vector{Bool}
+    issignificant = Vector{Bool}
 
     tolerance = 1e-3
     max_iterations = 10
     i = 1
     while i < max_iterations
-        A, b, closest_points, is_significant, Cnext, dnext =
-            iris_iteration(obstacles, A, b, C, d)
+        A, b, closest_points, issignificant, Cnext, dnext =
+            iris_iteration(bounding_polytope, obstacles, A, b, C, d)
 
         detC = det(C)
         detCnext = det(Cnext)
@@ -149,18 +156,19 @@ function iris(obstacles, starting_point)
         d = dnext
 
         if (det(Cnext) - detC) / detC < tolerance
-            println("Finished after ", i, " iterations.")
             break
         end
 
         i += 1
     end
+    println("Finished after ", i, " iterations.")
 
     # The rows of A and b are undefined where is_signficant is false.
-    A[is_significant, :], b[is_significant], C, d
+    A[issignificant, :], b[issignificant], C, d
 end
 
-function iris_with_animation(obstacles, starting_point)
+function iris_with_animation(bounding_polytope,
+                             obstacles, starting_point)
     vis = Visualizer()
     anim = Animation()
     framedelta = 30
@@ -176,6 +184,7 @@ function iris_with_animation(obstacles, starting_point)
     # defeats the purpose of sorting to begin with.
     closest_obstacles_first!(C, d, obstacles)
 
+    set_bounding_polytope(vis, bounding_polytope)
     set_obstacles(vis, obstacles)
     set_planes(vis, size(obstacles, 1))
     set_ellipsoid(vis)
@@ -189,17 +198,17 @@ function iris_with_animation(obstacles, starting_point)
 
     A = Matrix{Float64}
     b = Vector{Float64}
-    is_significant = Vector{Bool}
+    issignificant = Vector{Bool}
 
     tolerance = 1e-3
     max_iterations = 10
     i = 1
     while i < max_iterations
-        A, b, closest_points, is_significant, Cnext, dnext =
-            iris_iteration(obstacles, A, b, C, d)
+        A, b, closest_points, issignificant, Cnext, dnext =
+            iris_iteration(bounding_polytope, obstacles, A, b, C, d)
 
         atframe(anim, i * framedelta) do
-            draw_planes(vis, A, b, closest_points, is_significant)
+            draw_planes(vis, A, b, closest_points, issignificant)
             draw_ellipsoid(vis, C, d)
         end
 
@@ -213,19 +222,28 @@ function iris_with_animation(obstacles, starting_point)
         d = dnext
 
         if (det(Cnext) - detC) / detC < tolerance
-            println("Finished after ", i, " iterations.")
             break
         end
 
         i += 1
     end
+    println("Finished after ", i, " iterations.")
 
-    set_polyhedron(vis, A, b)
+    # The rows of A and b are undefined where is_signficant is false.
+    A = A[issignificant, :]
+    b = b[issignificant]
+
+    for halfspace in halfspaces(bounding_polytope)
+        A = vcat(A, halfspace.a')
+        b = vcat(b, halfspace.β)
+    end
+
+    set_free_space_polytope(vis, A, b)
     atframe(anim, 0) do
-        setvisible!(vis["polyhedron"], false)
+        setvisible!(vis["free_space_polytope"], false)
     end
     atframe(anim, (i+2) * framedelta) do
-        setvisible!(vis["polyhedron"], true)
+        setvisible!(vis["free_space_polytope"], true)
     end
 
     setanimation!(vis, anim)
@@ -233,19 +251,24 @@ function iris_with_animation(obstacles, starting_point)
     # MeshCat.convert_frames_to_video(
     #     "/home/chub/Downloads/___________.tar")
 
-    # The rows of A and b are undefined where is_signficant is false.
-    A[is_significant, :], b[is_significant], C, d
+    A, b, C, d
 end
 
 function animate_iris()
-    # TODO
-    s = 20
-    bounding_box_A = [
+    s = 10.
+    boundingbox_A = [
+        1   0  0;
+        -1  0  0;
+        0   1  0;
+        0  -1  0;
+        0   0  1;
+        0   0 -1
     ]
-    bounding_box_b = []
+    boundingbox_b = [s, 0, s, 0, s, 0]
+    bounding_polytope = translate(hrep(boundingbox_A, boundingbox_b),
+                                  -[s/2, s/2, s/2])
 
-    w = 1
-    obstacle = [
+    w = 1. obstacle = [
         0 0 0;
         w 0 0;
         w w 0;
@@ -257,7 +280,7 @@ function animate_iris()
     ] .- [w/2 w/2 w/2]
 
     obstacles = [
-        obstacle .+ [2 0 0],
+#        obstacle .+ [2 0 0],
         obstacle .+ [0 2 0],
         obstacle .+ [0 0 2],
         obstacle .- [1 0 0],
@@ -266,10 +289,24 @@ function animate_iris()
     ]
     starting_point = [0., 0., 0.] # q0 in paper
 
-    A, b, C, d = iris_with_animation(obstacles, starting_point)
+    A, b, C, d = iris_with_animation(
+        bounding_polytope, obstacles, starting_point)
 end
 
 function test_iris()
+    s = 10.
+    boundingbox_A = [
+        1   0  0;
+        -1  0  0;
+        0   1  0;
+        0  -1  0;
+        0   0  1;
+        0   0 -1
+    ]
+    boundingbox_b = [s, 0, s, 0, s, 0]
+    bounding_polytope = translate(hrep(boundingbox_A, boundingbox_b),
+                                  -[s/2, s/2, s/2])
+
     w = 1
     obstacle = [
         0 0 0;
@@ -283,7 +320,7 @@ function test_iris()
     ] .- [w/2 w/2 w/2]
 
     obstacles = [
-        obstacle .+ [2 0 0],
+#        obstacle .+ [2 0 0],
         obstacle .+ [0 2 0],
         obstacle .+ [0 0 2],
         obstacle .- [1 0 0],
@@ -292,7 +329,7 @@ function test_iris()
     ]
     starting_point = [0., 0., 0.] # q0 in paper
 
-    A, b, C, d = iris(obstacles, starting_point)
+    A, b, C, d = iris(bounding_polytope, obstacles, starting_point)
 
     println("A: ", A)
     println("b: ", b)
@@ -348,22 +385,27 @@ function draw_planes(vis, num_planes)
     end
 end
 
-function draw_planes(vis, A, b, closest_points, is_significant)
+function draw_planes(vis, A, b, closest_points, issignificant)
     for i in 1:size(A, 1)
         draw_plane(vis["planes"][string(i)],
-                   A[i, :], b[i], closest_points[i, :], is_significant[i])
+                   A[i, :], b[i], closest_points[i, :], issignificant[i])
         draw_closest_point(vis["points"][string(i)],
-                           closest_points[i, :], is_significant[i])
+                           closest_points[i, :], issignificant[i])
     end
 end
 
 function draw_plane(vis, a, b, closest_point, shouldshow)
+    setvisible!(vis, shouldshow)
+    if !shouldshow
+        return
+    end
+
     xw = .01
     yw = 1
     zw = 1
+
     R = hcat(a, nullspace(a'))
     R[:, end] *= det(R) # make sure this rotation matrix is right handed
-    setvisible!(vis, shouldshow)
     settransform!(vis,
         AffineMap(R, closest_point) ∘ Translation(-xw/2, -yw/2, -zw/2))
 end
@@ -375,16 +417,22 @@ end
 
 function draw_closest_point(vis, closest_point, shouldshow)
     setvisible!(vis, shouldshow)
+    if !shouldshow
+        return
+    end
     settransform!(vis, Translation(closest_point))
 end
 
-function set_polyhedron(vis, A, b)
-    poly = HalfSpace(A[1, :], b[1])
-    for i = 2:size(A, 1)
-        poly = poly ∩ HalfSpace(A[i, :], b[i])
-    end
-    setobject!(vis["polyhedron"], Polyhedra.Mesh(polyhedron(poly)),
+function set_free_space_polytope(vis, A, b)
+    setobject!(vis["free_space_polytope"],
+               Polyhedra.Mesh(polyhedron(hrep(A, b))),
+               MeshPhongMaterial(color=RGBA(1, 0, 0, 0.5)))
+end
+
+function set_bounding_polytope(vis, polytope::HRepresentation)
+    setobject!(vis["bounding_polytope"], Polyhedra.Mesh(polyhedron(polytope)),
                MeshPhongMaterial(color=RGBA(0, 0, 0, 0.5)))
+    setvisible!(vis["bounding_polytope"], false)
 end
 
 end
