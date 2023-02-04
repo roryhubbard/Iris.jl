@@ -268,7 +268,8 @@ function animate_iris()
     bounding_polytope = translate(hrep(boundingbox_A, boundingbox_b),
                                   -[s/2, s/2, s/2])
 
-    w = 1. obstacle = [
+    w = 1.
+    obstacle = [
         0 0 0;
         w 0 0;
         w w 0;
