@@ -39,18 +39,40 @@ function closest_point_to_ellipsoid_ballspace(obstacle, C, d)
 end
 
 function closest_point_to_ellipsoid(obstacle, C, d)
-    x = closest_point_to_ellipsoid_ballspace(obstacle, C, d)
-    C * x + d
+    # Could also solve the problem in ballspace and then transform it back.
+#    x = closest_point_to_ellipsoid_ballspace(obstacle, C, d)
+#    C * x + d
+
+    num_vertices = size(obstacle, 1)
+    dims = size(obstacle, 2)
+
+    model = Model(SCS.Optimizer)
+    set_silent(model)
+
+    @variable(model, x[1:dims])
+    @variable(model, w[1:num_vertices])
+
+    @constraint(model, w in MOI.Nonnegatives(num_vertices))
+    @constraint(model, obstacle' * w .== x)
+    @constraint(model, sum(w) == 1.)
+
+    invC = inv(C)
+    Q = invC' * invC
+    @objective(model, Min, (x - d)' * Q * (x - d))
+
+    optimize!(model)
+
+    sqrt(objective_value(model)), value.(x)
 end
 
 function closest_obstacles_first!(C, d, obstacles)
-    sort!(obstacles, by = obstacle -> norm(
-          closest_point_to_ellipsoid_ballspace(obstacle, C, d)))
+    sort!(obstacles, by = obstacle ->
+          closest_point_to_ellipsoid(obstacle, C, d)[1])
 end
 
 function tangent_plane_to_ellipsoid(x, C, d)
     invC = inv(C)
-    a = normalize(2 * invC * invC' * (x - d))
+    a = normalize(2. * invC' * invC * (x - d))
     b = a' * x
     a, b
 end
@@ -68,7 +90,7 @@ function separating_hyperplanes(obstacles, C, d)
             continue
         end
 
-        closest_point = closest_point_to_ellipsoid(obstacles[i], C, d)
+        uniform_scaling, closest_point = closest_point_to_ellipsoid(obstacles[i], C, d)
         aᵢ, bᵢ = tangent_plane_to_ellipsoid(closest_point, C, d)
 
         # on the last iteration for i, this loop will be skipped
@@ -281,12 +303,17 @@ function animate_iris()
     ] .- [w/2 w/2 w/2]
 
     obstacles = [
-#        obstacle .+ [2 0 0],
+        obstacle .+ [4 0 0],
         obstacle .+ [0 2 0],
-        obstacle .+ [0 0 2],
+        obstacle .+ [.5 0 2],
         obstacle .- [1 0 0],
         obstacle .- [0 1 0],
         obstacle .- [0 0 1],
+        obstacle .+ [2 0 -4],
+        obstacle .+ [2 0 4],
+        obstacle .+ [2 -3 0],
+        obstacle .+ [2 3 3],
+        obstacle .+ [2 4 0],
     ]
     starting_point = [0., 0., 0.] # q0 in paper
 
